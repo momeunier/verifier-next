@@ -1,6 +1,11 @@
 import { NextResponse } from "next/server";
 import { validateMailExchangers } from "../../../utils/advancedDomainValidators";
 
+// Force Node.js runtime
+export const runtime = "nodejs";
+// Increase timeout to 30 seconds
+export const maxDuration = 30;
+
 export async function POST(request) {
   try {
     const { email } = await request.json();

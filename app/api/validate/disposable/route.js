@@ -2,6 +2,11 @@ import { NextResponse } from "next/server";
 import { validateDisposable } from "../../../utils/advancedValidators";
 import { CHECK_DETAILS } from "../../../constants/checkDetails";
 
+// Force Node.js runtime
+export const runtime = "nodejs";
+// Increase timeout to 30 seconds
+export const maxDuration = 30;
+
 export async function POST(request) {
   try {
     const { email } = await request.json();
