@@ -1,8 +1,13 @@
+import { fileURLToPath } from "url";
+import { dirname } from "path";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  experimental: {
-    serverComponentsExternalPackages: ["redis"],
-  },
+  experimental: {},
+  serverExternalPackages: ["redis"],
   serverRuntimeConfig: {
     // Will only be available on the server side
     PROJECT_ROOT: __dirname,
