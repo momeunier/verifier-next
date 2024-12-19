@@ -15,6 +15,7 @@ export async function POST(request) {
       return NextResponse.json({ error: "Email is required" }, { status: 400 });
     }
 
+    console.log("Starting disposable check for:", email);
     const { isValid, confidence, factors } = await validateDisposable(email);
     const details = CHECK_DETAILS.disposable;
 
@@ -42,6 +43,9 @@ export async function POST(request) {
     return NextResponse.json(response);
   } catch (error) {
     console.error("Disposable check error:", error);
-    return NextResponse.json({ error: "Invalid request" }, { status: 400 });
+    return NextResponse.json(
+      { error: "Failed to validate disposable status" },
+      { status: 500 }
+    );
   }
 }

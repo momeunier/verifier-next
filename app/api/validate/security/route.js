@@ -23,10 +23,19 @@ export async function POST(request) {
       );
     }
 
+    console.log("Starting security check for domain:", domain);
     const result = await validateEmailSecurity(domain);
     const details = CHECK_DETAILS.security;
 
-    return NextResponse.json({
+    // Log the validation results
+    console.log("Security check results:", {
+      domain,
+      isValid: result.isValid,
+      confidence: result.confidence,
+      factors: result.factors,
+    });
+
+    const response = {
       check: "security",
       email,
       isValid: result.isValid,
@@ -35,9 +44,17 @@ export async function POST(request) {
       message: result.isValid ? details.success : details.failure,
       details: result.details,
       error: result.error,
-    });
+    };
+
+    // Log the final response
+    console.log("Security check response:", response);
+
+    return NextResponse.json(response);
   } catch (error) {
     console.error("Security check error:", error);
-    return NextResponse.json({ error: "Invalid request" }, { status: 400 });
+    return NextResponse.json(
+      { error: "Failed to validate security status" },
+      { status: 500 }
+    );
   }
 }

@@ -1,68 +1,59 @@
 import { createClient } from "redis";
 
 const getRedisConfig = () => {
-  const config = {
+  if (!process.env.REDIS_URL) {
+    console.warn("REDIS_URL is not set");
+    return null;
+  }
+
+  return {
+    url: process.env.REDIS_URL,
     socket: {
-      host: process.env.REDIS_HOST,
-      port: parseInt(process.env.REDIS_PORT || "6379"),
-      tls: true,
-      rejectUnauthorized: true, // Verify server certificate
-      keepAlive: 30000, // Keep alive ping every 30 seconds
+      keepAlive: 30000,
       reconnectStrategy: (retries) => {
-        // Exponential backoff with max delay of 10 seconds
         const delay = Math.min(Math.pow(2, retries) * 1000, 10000);
         return delay;
       },
     },
-    password: process.env.REDIS_PASSWORD,
-    // Retry strategy for commands
-    retry_strategy: (options) => {
-      if (options.error && options.error.code === "ECONNREFUSED") {
-        // End reconnecting on a specific error
-        return new Error("The server refused the connection");
-      }
-      if (options.total_retry_time > 1000 * 60 * 60) {
-        // End reconnecting after 1 hour
-        return new Error("Retry time exhausted");
-      }
-      if (options.attempt > 10) {
-        // End reconnecting with built in error
-        return undefined;
-      }
-      // Reconnect after
-      return Math.min(options.attempt * 100, 3000);
-    },
   };
-
-  return config;
 };
 
 let redisClient = null;
 
 const createRedisClient = () => {
   if (!redisClient) {
-    redisClient = createClient(getRedisConfig());
-
-    redisClient.on("error", (err) => {
-      console.error("Redis Client Error:", err);
-      // Reset client on fatal errors
-      if (err.code === "ECONNREFUSED" || err.code === "ENOTFOUND") {
-        redisClient = null;
+    try {
+      const config = getRedisConfig();
+      if (!config) {
+        console.log("Redis configuration not available");
+        return null;
       }
-    });
 
-    redisClient.on("connect", () => {
-      console.log("Redis client connected");
-    });
+      redisClient = createClient(config);
 
-    redisClient.on("reconnecting", () => {
-      console.log("Redis client reconnecting");
-    });
+      redisClient.on("error", (err) => {
+        console.error("Redis Client Error:", err);
+        if (err.code === "ECONNREFUSED" || err.code === "ENOTFOUND") {
+          redisClient = null;
+        }
+      });
 
-    redisClient.on("end", () => {
-      console.log("Redis client connection ended");
+      redisClient.on("connect", () => {
+        console.log("Redis client connected");
+      });
+
+      redisClient.on("reconnecting", () => {
+        console.log("Redis client reconnecting");
+      });
+
+      redisClient.on("end", () => {
+        console.log("Redis client connection ended");
+        redisClient = null;
+      });
+    } catch (error) {
+      console.error("Error creating Redis client:", error);
       redisClient = null;
-    });
+    }
   }
 
   return redisClient;
@@ -73,6 +64,11 @@ const connectRedis = async () => {
   try {
     const client = createRedisClient();
 
+    if (!client) {
+      console.log("Redis client not available, proceeding without Redis");
+      return null;
+    }
+
     if (!client.isOpen) {
       await client.connect();
     }
@@ -80,7 +76,7 @@ const connectRedis = async () => {
     return client;
   } catch (error) {
     console.error("Error connecting to Redis:", error);
-    throw error;
+    return null;
   }
 };
 
@@ -108,13 +104,15 @@ export const getRedisClient = async () => {
     return await connectRedis();
   } catch (error) {
     console.error("Failed to get Redis client:", error);
-    throw error;
+    return null;
   }
 };
 
 export const getCachedSet = async (key) => {
   try {
     const client = await getRedisClient();
+    if (!client) return new Set();
+
     const members = await client.sMembers(key);
     return new Set(members);
   } catch (error) {
@@ -126,19 +124,22 @@ export const getCachedSet = async (key) => {
 export const setCachedSet = async (key, values, ttl = 3600) => {
   try {
     const client = await getRedisClient();
+    if (!client) return;
+
     if (values.size > 0 || Array.isArray(values)) {
       await client.sAdd(key, Array.from(values));
       await client.expire(key, ttl);
     }
   } catch (error) {
     console.error(`Error setting cached set for key ${key}:`, error);
-    throw error;
   }
 };
 
 export const getCachedJson = async (key) => {
   try {
     const client = await getRedisClient();
+    if (!client) return null;
+
     const value = await client.get(key);
     return value ? JSON.parse(value) : null;
   } catch (error) {
@@ -150,11 +151,12 @@ export const getCachedJson = async (key) => {
 export const setCachedJson = async (key, value, ttl = 3600) => {
   try {
     const client = await getRedisClient();
+    if (!client) return;
+
     await client.set(key, JSON.stringify(value));
     await client.expire(key, ttl);
   } catch (error) {
     console.error(`Error setting cached JSON for key ${key}:`, error);
-    throw error;
   }
 };
 

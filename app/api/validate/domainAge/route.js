@@ -23,10 +23,19 @@ export async function POST(request) {
       );
     }
 
+    console.log("Starting domain age check for domain:", domain);
     const result = await validateDomainAge(domain);
     const details = CHECK_DETAILS.domainAge;
 
-    return NextResponse.json({
+    // Log the validation results
+    console.log("Domain age check results:", {
+      domain,
+      isValid: result.isValid,
+      confidence: result.confidence,
+      factors: result.factors,
+    });
+
+    const response = {
       check: "domainAge",
       email,
       isValid: result.isValid,
@@ -35,9 +44,17 @@ export async function POST(request) {
       message: result.isValid ? details.success : details.failure,
       details: result.details,
       error: result.error,
-    });
+    };
+
+    // Log the final response
+    console.log("Domain age check response:", response);
+
+    return NextResponse.json(response);
   } catch (error) {
     console.error("Domain age check error:", error);
-    return NextResponse.json({ error: "Invalid request" }, { status: 400 });
+    return NextResponse.json(
+      { error: "Failed to validate domain age" },
+      { status: 500 }
+    );
   }
 }
