@@ -1,51 +1,44 @@
 import { NextResponse } from "next/server";
 import { validateDisposable } from "../../../utils/advancedValidators";
+import { logStep, logError } from "../../../utils/logging";
 import { CHECK_DETAILS } from "../../../constants/checkDetails";
-
-// Force Node.js runtime
-export const runtime = "nodejs";
-// Increase timeout to 30 seconds
-export const maxDuration = 30;
 
 export async function POST(request) {
   try {
     const { email } = await request.json();
 
     if (!email) {
+      logStep("warn", "Disposable check: No email provided");
       return NextResponse.json({ error: "Email is required" }, { status: 400 });
     }
 
-    console.log("Starting disposable check for:", email);
-    const { isValid, confidence, factors } = await validateDisposable(email);
+    logStep("info", "Disposable check starting", email);
+
+    const result = await validateDisposable(email);
+    logStep("info", "Disposable check completed", JSON.stringify(result));
+
     const details = CHECK_DETAILS.disposable;
-
-    // Log the validation results
-    console.log("Disposable check results:", {
-      email,
-      isValid,
-      confidence,
-      factors,
-    });
-
     const response = {
       check: "disposable",
       email,
-      isValid,
-      confidence,
-      factors,
-      message: isValid ? details.success : details.failure,
-      details: details.details,
+      isValid: result.isValid,
+      confidence: result.confidence,
+      factors: result.factors,
+      message: result.isValid ? details.success : details.failure,
+      details: {
+        ...details.details,
+        ...result.details,
+      },
     };
 
-    // Log the final response
-    console.log("Disposable check response:", response);
-
+    logStep(
+      "info",
+      "Disposable check response prepared",
+      JSON.stringify(response)
+    );
     return NextResponse.json(response);
   } catch (error) {
-    console.error("Disposable check error:", error);
-    return NextResponse.json(
-      { error: "Failed to validate disposable status" },
-      { status: 500 }
-    );
+    logError("disposable", "Check failed", error);
+    return NextResponse.json({ error: "Invalid request" }, { status: 400 });
   }
 }

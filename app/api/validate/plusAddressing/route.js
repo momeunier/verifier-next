@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { validatePlusAddressing } from "../../../utils/advancedValidators";
+import { logStep, logError } from "../../../utils/logging";
 import { CHECK_DETAILS } from "../../../constants/checkDetails";
 
 export async function POST(request) {
@@ -7,39 +8,42 @@ export async function POST(request) {
     const { email } = await request.json();
 
     if (!email) {
+      logStep("warn", "Plus addressing check: No email provided");
       return NextResponse.json({ error: "Email is required" }, { status: 400 });
     }
 
+    logStep("info", "Plus addressing check starting", email);
+
     const result = await validatePlusAddressing(email);
+    logStep("info", "Plus addressing check completed", JSON.stringify(result));
+
     const details = CHECK_DETAILS.plusAddressing;
-
-    // Only include this check in the results if plus addressing is used
-    if (result.confidence === null) {
-      return NextResponse.json({
-        check: "plusAddressing",
-        email,
-        isValid: true,
-        confidence: null, // This will make the UI ignore this check in the overall score
-        factors: result.factors,
-        message: details.failure, // Just informational
-        details: details.details,
-      });
-    }
-
-    return NextResponse.json({
+    const response = {
       check: "plusAddressing",
       email,
       isValid: result.isValid,
       confidence: result.confidence,
       factors: result.factors,
-      message: details.success,
+      message: result.isValid ? details.success : details.failure,
       details: {
         ...details.details,
         ...result.details,
       },
-    });
+    };
+
+    logStep(
+      "info",
+      "Plus addressing check response prepared",
+      JSON.stringify(response)
+    );
+    return NextResponse.json(response);
   } catch (error) {
-    console.error("Plus addressing check error:", error);
-    return NextResponse.json({ error: "Invalid request" }, { status: 400 });
+    logError("plusAddressing", "Check failed", error);
+    return NextResponse.json({
+      isValid: false,
+      confidence: 0,
+      factors: {},
+      details: { error: error.message },
+    });
   }
 }

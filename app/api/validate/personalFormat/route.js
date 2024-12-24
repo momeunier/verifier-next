@@ -1,15 +1,36 @@
 import { NextResponse } from "next/server";
 import { validatePersonalFormat } from "../../../utils/personalFormatValidator";
+import { logStep, logError } from "../../../utils/logging";
+import { firstNames } from "../../../utils/firstNames";
 
 export async function POST(request) {
   try {
     const { email } = await request.json();
 
     if (!email) {
+      logStep("warn", "Personal format check: No email provided");
       return NextResponse.json({ error: "Email is required" }, { status: 400 });
     }
 
+    logStep("info", "Personal format check starting", email);
+
+    // Debug logging
+    const [localPart] = email.toLowerCase().split("@");
+    const cleanLocalPart = localPart.replace(/\./g, "");
+    const firstName = cleanLocalPart.split(/[.-]/)[0];
+    const firstNamesSet = new Set(firstNames.map((name) => name.toLowerCase()));
+
+    logStep("debug", "Validation details", {
+      localPart,
+      cleanLocalPart,
+      firstName,
+      setSize: firstNamesSet.size,
+      nameInSet: firstNamesSet.has(firstName),
+      firstFewNames: Array.from(firstNamesSet).slice(0, 5),
+    });
+
     const result = await validatePersonalFormat(email);
+    logStep("info", "Personal format check completed", JSON.stringify(result));
 
     return NextResponse.json({
       check: "personalFormat",
@@ -35,10 +56,12 @@ export async function POST(request) {
       },
     });
   } catch (error) {
-    console.error("Personal format validation error:", error);
-    return NextResponse.json(
-      { error: "Failed to validate personal format" },
-      { status: 500 }
-    );
+    logError("personalFormat", "Check failed", error);
+    return NextResponse.json({
+      isValid: false,
+      confidence: 0,
+      factors: {},
+      details: { error: error.message },
+    });
   }
 }

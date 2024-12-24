@@ -1,53 +1,48 @@
 import { NextResponse } from "next/server";
-import { validateInternationalizedEmail } from "../../../utils/advancedDomainValidators";
+import { validateInternationalizedEmail } from "../../../utils/mailExchangerValidator";
+import { logStep, logError } from "../../../utils/logging";
+import { CHECK_DETAILS } from "../../../constants/checkDetails";
 
 export async function POST(request) {
   try {
     const { email } = await request.json();
 
     if (!email) {
-      console.log("Internationalization check: No email provided");
+      logStep("warn", "Internationalization check: No email provided");
       return NextResponse.json({ error: "Email is required" }, { status: 400 });
     }
 
-    console.log("Internationalization check starting for:", email);
+    logStep("info", "Internationalization check starting", email);
+
     const result = await validateInternationalizedEmail(email);
-    console.log("Internationalization check result:", {
+    logStep(
+      "info",
+      "Internationalization check completed",
+      JSON.stringify(result)
+    );
+
+    const details = CHECK_DETAILS.internationalized;
+    const response = {
+      check: "internationalized",
       email,
       isValid: result.isValid,
       confidence: result.confidence,
       factors: result.factors,
-      details: result.details,
-    });
-
-    return NextResponse.json({
-      check: "internationalized",
-      email,
-      ...result,
-      message: result.isValid
-        ? "Email uses standard ASCII characters or valid internationalization"
-        : "Email contains potentially problematic non-ASCII characters",
+      message: result.isValid ? details.success : details.failure,
       details: {
-        what: "Validates internationalized email address format and encoding",
-        why: "Non-ASCII characters can cause deliverability issues with some email systems",
-        standards: [
-          "IDNA (Internationalizing Domain Names in Applications)",
-          "RFC 6530 - SMTP Extension for Internationalized Email",
-          "Punycode encoding standards",
-        ],
-        recommendations: [
-          "Use ASCII characters in the local part when possible",
-          "Ensure proper Punycode encoding for internationalized domain names",
-          "Consider providing ASCII alternatives for non-ASCII addresses",
-        ],
+        ...details.details,
         ...result.details,
       },
-    });
+    };
+
+    return NextResponse.json(response);
   } catch (error) {
-    console.error("Internationalized email check error:", error);
-    return NextResponse.json(
-      { error: "Failed to validate internationalized email format" },
-      { status: 500 }
-    );
+    logError("internationalization", "Check failed", error);
+    return NextResponse.json({
+      isValid: false,
+      confidence: 0,
+      factors: {},
+      details: { error: error.message },
+    });
   }
 }

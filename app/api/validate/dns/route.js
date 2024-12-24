@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
-import { validateDNS } from "../../../utils/validators";
+import dns from "dns";
+import { logStep, logError } from "../../../utils/logging";
 import { CHECK_DETAILS } from "../../../constants/checkDetails";
 
 export async function POST(request) {
@@ -7,39 +8,46 @@ export async function POST(request) {
     const { email } = await request.json();
 
     if (!email) {
-      console.log("DNS check: No email provided");
+      logStep("warn", "DNS check: No email provided");
       return NextResponse.json({ error: "Email is required" }, { status: 400 });
     }
 
-    console.log("DNS check starting for:", email);
-    const { isValid, confidence, factors, records, error } = await validateDNS(
-      email
-    );
+    logStep("info", "DNS check starting", email);
 
-    console.log("DNS check result:", {
+    const [, domain] = email.split("@");
+    const records = await dns.promises.resolveMx(domain);
+
+    const result = {
       email,
-      isValid,
-      confidence,
-      factors,
-      records: records || [],
-      error,
-    });
+      isValid: records && records.length > 0,
+      confidence: records && records.length > 0 ? 1 : 0,
+      factors: {},
+      records,
+    };
+
+    logStep("info", "DNS check completed", JSON.stringify(result));
 
     const details = CHECK_DETAILS.dns;
-
     return NextResponse.json({
       check: "dns",
       email,
-      isValid,
-      confidence,
-      factors,
-      message: isValid ? details.success : details.failure,
-      details: details.details,
-      records: records || [],
-      error,
+      isValid: result.isValid,
+      confidence: result.confidence,
+      factors: result.factors,
+      message: result.isValid ? details.success : details.failure,
+      details: {
+        ...details.details,
+        ...result,
+      },
     });
   } catch (error) {
-    console.error("DNS check error:", error);
-    return NextResponse.json({ error: "Invalid request" }, { status: 400 });
+    logError("dns", "DNS check failed", error);
+    return NextResponse.json({
+      isValid: false,
+      confidence: 0,
+      factors: {},
+      records: [],
+      error: error.message,
+    });
   }
 }

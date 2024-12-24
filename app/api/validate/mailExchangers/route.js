@@ -1,67 +1,79 @@
 import { NextResponse } from "next/server";
-import { validateMailExchangers } from "../../../utils/advancedDomainValidators";
-
-// Force Node.js runtime
-export const runtime = "nodejs";
-// Increase timeout to 30 seconds
-export const maxDuration = 30;
+import {
+  validateMailExchangers,
+  getMXRecords,
+} from "../../../utils/mailExchangerValidator";
+import { logStep, logError } from "../../../utils/logging";
+import { CHECK_DETAILS } from "../../../constants/checkDetails";
 
 export async function POST(request) {
   try {
     const { email } = await request.json();
 
     if (!email) {
-      console.log("Mail exchangers check: No email provided");
+      logStep("warn", "Mail exchangers check: No email provided");
       return NextResponse.json({ error: "Email is required" }, { status: 400 });
     }
 
-    const domain = email.split("@")[1];
-    if (!domain) {
-      console.log("Mail exchangers check: Invalid email format");
+    if (!email.includes("@")) {
+      logStep("warn", "Mail exchangers check: Invalid email format", email);
       return NextResponse.json(
         { error: "Invalid email format" },
         { status: 400 }
       );
     }
 
-    console.log("Mail exchangers check starting for domain:", domain);
-    const result = await validateMailExchangers(domain);
-    console.log("Mail exchangers check result:", {
-      domain,
-      isValid: result.isValid,
-      confidence: result.confidence,
-      factors: result.factors,
-      details: result.details,
-    });
+    const [, domain] = email.split("@");
+    logStep("info", "Mail exchangers check starting", domain);
 
-    return NextResponse.json({
+    // First get MX records without testing connectivity
+    const mxResult = await getMXRecords(domain);
+
+    // Then do the full validation if requested
+    const fullCheck = request.headers.get("x-full-check") === "true";
+    let validationResult = null;
+
+    if (fullCheck) {
+      validationResult = await validateMailExchangers(domain);
+      logStep(
+        "info",
+        "Full mail exchanger check completed",
+        JSON.stringify(validationResult)
+      );
+    }
+
+    const details = CHECK_DETAILS.mailExchangers;
+    const response = {
       check: "mailExchangers",
-      email,
-      ...result,
-      message: result.isValid
-        ? "Mail exchangers are properly configured and responsive"
-        : "Issues detected with mail exchangers",
+      domain,
+      isValid: mxResult.isValid,
       details: {
-        what: "Validates mail exchanger configuration and responsiveness",
-        why: "Ensures the email domain has properly configured and active mail servers",
-        standards: [
-          "SMTP protocol standards",
-          "DNS MX record configuration",
-          "RBL (Real-time Blackhole List) checks",
-        ],
-        recommendations: [
-          "Ensure mail servers are properly configured",
-          "Monitor mail server blacklist status",
-          "Maintain multiple mail exchangers for redundancy",
-        ],
-        ...result.details,
+        ...details.details,
+        ...mxResult.details,
       },
-    });
+    };
+
+    // Add full validation results if available
+    if (validationResult) {
+      response.fullValidation = {
+        isValid: validationResult.isValid,
+        confidence: validationResult.confidence,
+        factors: validationResult.factors,
+        details: validationResult.details,
+      };
+      response.message = validationResult.isValid
+        ? details.success
+        : details.failure;
+    }
+
+    return NextResponse.json(response);
   } catch (error) {
-    console.error("Mail exchangers check error:", error);
-    return NextResponse.json(
-      { error: "Failed to validate mail exchangers" },
-      { status: 500 }
-    );
+    logError("mailExchangers", "Check failed", error);
+    return NextResponse.json({
+      isValid: false,
+      confidence: 0,
+      factors: {},
+      details: { error: error.message },
+    });
   }
 }

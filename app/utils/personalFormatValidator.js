@@ -1,32 +1,36 @@
 import { firstNames } from "./firstNames";
+import { logStep } from "./logging";
 
 export const validatePersonalFormat = async (email) => {
   const [localPart] = email.toLowerCase().split("@");
-
-  // Remove any dots for consistent checking
-  const cleanLocalPart = localPart.replace(/\./g, "");
+  logStep("debug", "Processing email local part", localPart);
 
   try {
     const firstNamesSet = new Set(firstNames.map((name) => name.toLowerCase()));
-
-    // Check for firstname.lastname or firstname pattern
-    const parts = cleanLocalPart.split(/[.-]/);
+    const parts = localPart.split(/[.-]/);
     const firstName = parts[0].toLowerCase();
+
+    logStep("debug", "Name check", {
+      parts,
+      firstName,
+      setSize: firstNamesSet.size,
+    });
 
     const isFirstName = firstNamesSet.has(firstName);
     const hasLastName = parts.length > 1;
 
-    // Calculate confidence based on pattern match
-    let confidence = 0;
     const factors = {
       isFirstName: isFirstName ? 0.6 : 0,
       hasLastName: hasLastName ? 0.4 : 0,
     };
 
-    confidence = Object.values(factors).reduce((sum, score) => sum + score, 0);
+    const confidence = Object.values(factors).reduce(
+      (sum, score) => sum + score,
+      0
+    );
 
-    return {
-      isValid: isFirstName, // Valid if at least the first part is a name
+    const result = {
+      isValid: isFirstName,
       confidence,
       factors,
       details: {
@@ -35,6 +39,9 @@ export const validatePersonalFormat = async (email) => {
         hasLastName,
       },
     };
+
+    logStep("debug", "Validation result", JSON.stringify(result));
+    return result;
   } catch (error) {
     console.error("Error checking personal format:", error);
     return {

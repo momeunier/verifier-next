@@ -83,6 +83,29 @@ export default function Home() {
   };
 
   const calculateOverallConfidence = () => {
+    // Define killer criteria checks
+    const killerChecks = ["domain", "dns"];
+
+    // Wait until all killer criteria checks have completed
+    const allKillerChecksPresent = killerChecks.every(
+      (check) => results[check]
+    );
+    if (!allKillerChecksPresent) {
+      return 0; // Don't show any confidence until we have all killer criteria results
+    }
+
+    // If any killer check has an error or failed, confidence is 0
+    const anyKillerFailed = killerChecks.some(
+      (check) =>
+        results[check].error ||
+        results[check].confidence === 0 ||
+        !results[check].isValid
+    );
+    if (anyKillerFailed) {
+      return 0;
+    }
+
+    // Only if all killer criteria pass, calculate weighted average
     const validChecks = Object.values(results).filter(
       (r) =>
         !r.error && typeof r.confidence === "number" && r.confidence !== null
@@ -100,16 +123,47 @@ export default function Home() {
       security: 0.3,
       domainAge: 0.2,
       plusAddressing: 0.2,
+      reputableProvider: 0.2,
+      personalFormat: 0.1,
+      internationalization: 0.1,
+      mailExchanger: 0.3,
     };
 
     let totalWeight = 0;
     const weightedSum = validChecks.reduce((sum, result) => {
+      // Skip checks that returned null confidence (not applicable)
+      if (result.confidence === null) return sum;
+
       const weight = weights[result.check] || 0;
       totalWeight += weight;
       return sum + result.confidence * weight;
     }, 0);
 
     return totalWeight > 0 ? weightedSum / totalWeight : 0;
+  };
+
+  // Update the progress indicator text to be more accurate
+  const getProgressText = () => {
+    const killerChecks = ["domain", "dns"];
+    const allKillerChecksPresent = killerChecks.every(
+      (check) => results[check]
+    );
+
+    if (!allKillerChecksPresent) {
+      return "Validating...";
+    }
+
+    const anyKillerFailed = killerChecks.some(
+      (check) =>
+        results[check].error ||
+        results[check].confidence === 0 ||
+        !results[check].isValid
+    );
+    if (anyKillerFailed) {
+      return "Domain Unreachable";
+    }
+
+    return `${Math.round(calculateOverallConfidence() * 100)}% Confidence`;
   };
 
   const renderConfidenceBar = (confidence) => {
@@ -209,13 +263,21 @@ export default function Home() {
                     : "Validating Email"}
                 </h2>
                 <span className="text-sm text-gray-600">
-                  {Math.round(calculateProgress())}% Complete
+                  {getProgressText()}
                 </span>
               </div>
               <div className="w-full bg-gray-200 rounded-full h-2.5">
                 <div
-                  className="h-2.5 rounded-full bg-blue-600 transition-all duration-500"
-                  style={{ width: `${calculateProgress()}%` }}
+                  className={`h-2.5 rounded-full transition-all duration-500 ${
+                    calculateOverallConfidence() >= 0.8
+                      ? "bg-green-500"
+                      : calculateOverallConfidence() >= 0.6
+                      ? "bg-blue-500"
+                      : calculateOverallConfidence() >= 0.4
+                      ? "bg-yellow-500"
+                      : "bg-red-500"
+                  }`}
+                  style={{ width: `${calculateOverallConfidence() * 100}%` }}
                 ></div>
               </div>
               <div className="mt-4 grid grid-cols-2 md:grid-cols-3 gap-4">
@@ -445,23 +507,26 @@ export default function Home() {
                                               </span>
                                             </div>
                                             <div className="space-y-2">
-                                              <div className="flex items-center gap-2">
-                                                <span className="text-sm font-medium text-gray-700">
-                                                  Status:
-                                                </span>
-                                                <span
-                                                  className={`text-sm ${
-                                                    exchanger.canConnect
-                                                      ? "text-green-600"
-                                                      : "text-red-600"
-                                                  }`}
-                                                >
-                                                  {exchanger.canConnect
-                                                    ? "Connected"
-                                                    : "Failed to connect"}
-                                                </span>
-                                              </div>
-                                              {exchanger.ips.length > 0 && (
+                                              {exchanger.canConnect !==
+                                                undefined && (
+                                                <div className="flex items-center gap-2">
+                                                  <span className="text-sm font-medium text-gray-700">
+                                                    Status:
+                                                  </span>
+                                                  <span
+                                                    className={`text-sm ${
+                                                      exchanger.canConnect
+                                                        ? "text-green-600"
+                                                        : "text-red-600"
+                                                    }`}
+                                                  >
+                                                    {exchanger.canConnect
+                                                      ? "Connected"
+                                                      : "Failed to connect"}
+                                                  </span>
+                                                </div>
+                                              )}
+                                              {exchanger.ips?.length > 0 && (
                                                 <div>
                                                   <span className="text-sm font-medium text-gray-700">
                                                     IP Addresses:
@@ -484,160 +549,173 @@ export default function Home() {
                                       )}
                                     </div>
 
-                                    {/* RBL Status Section */}
-                                    <div className="border rounded-lg p-4 bg-white">
-                                      <h3 className="font-medium text-gray-900 mb-2">
-                                        {details.details.sections.rbl.title}
-                                      </h3>
-                                      <p className="text-sm text-gray-600 mb-4">
-                                        {
-                                          details.details.sections.rbl
-                                            .description
-                                        }
-                                      </p>
+                                    {/* Only show RBL and SMTP sections if we have full validation results */}
+                                    {results[checkType].fullValidation && (
+                                      <>
+                                        {/* RBL Status Section */}
+                                        <div className="border rounded-lg p-4 bg-white">
+                                          <h3 className="font-medium text-gray-900 mb-2">
+                                            {details.details.sections.rbl.title}
+                                          </h3>
+                                          <p className="text-sm text-gray-600 mb-4">
+                                            {
+                                              details.details.sections.rbl
+                                                .description
+                                            }
+                                          </p>
 
-                                      {/* List of RBL providers being checked */}
-                                      <div className="mb-4">
-                                        <h4 className="text-sm font-medium text-gray-700 mb-2">
-                                          Checking against:
-                                        </h4>
-                                        <ul className="text-sm text-gray-600 space-y-1">
-                                          {details.details.sections.rbl.providers.map(
-                                            (provider, index) => (
-                                              <li
-                                                key={index}
-                                                className="flex items-center"
-                                              >
-                                                <span className="mr-2">•</span>
-                                                {provider}
-                                              </li>
-                                            )
-                                          )}
-                                        </ul>
-                                      </div>
-
-                                      {/* Blacklist Results */}
-                                      <div className="space-y-4">
-                                        <h4 className="text-sm font-medium text-gray-700">
-                                          Results:
-                                        </h4>
-                                        {results[
-                                          checkType
-                                        ].details.exchangers.map(
-                                          (exchanger) =>
-                                            exchanger.blacklistedDetails
-                                              .length > 0 && (
-                                              <div
-                                                key={`${exchanger.host}-rbl`}
-                                                className="border rounded-lg p-4 bg-red-50"
-                                              >
-                                                <h4 className="font-medium text-red-700 mb-2">
-                                                  {exchanger.host}
-                                                </h4>
-                                                <div className="space-y-1">
-                                                  {exchanger.blacklistedDetails.map(
-                                                    (detail) => (
-                                                      <div
-                                                        key={`${detail.ip}-${detail.rbl}`}
-                                                        className="text-sm text-red-600"
-                                                      >
-                                                        • {detail.ip} listed in{" "}
-                                                        {detail.rbl}
-                                                      </div>
-                                                    )
-                                                  )}
-                                                </div>
-                                              </div>
-                                            )
-                                        )}
-                                        {!results[
-                                          checkType
-                                        ].details.exchangers.some(
-                                          (e) => e.blacklistedDetails.length > 0
-                                        ) && (
-                                          <div className="text-sm text-green-600 border rounded-lg p-4 bg-green-50">
-                                            ✓ No blacklist entries found in any
-                                            of the RBL providers
+                                          {/* List of RBL providers being checked */}
+                                          <div className="mb-4">
+                                            <h4 className="text-sm font-medium text-gray-700 mb-2">
+                                              Checking against:
+                                            </h4>
+                                            <ul className="text-sm text-gray-600 space-y-1">
+                                              {details.details.sections.rbl.providers.map(
+                                                (provider, index) => (
+                                                  <li
+                                                    key={index}
+                                                    className="flex items-center"
+                                                  >
+                                                    <span className="mr-2">
+                                                      •
+                                                    </span>
+                                                    {provider}
+                                                  </li>
+                                                )
+                                              )}
+                                            </ul>
                                           </div>
-                                        )}
-                                      </div>
-                                    </div>
 
-                                    {/* SMTP Session Logs */}
-                                    <div className="border rounded-lg p-4 bg-white">
-                                      <h3 className="font-medium text-gray-900 mb-2">
-                                        {details.details.sections.smtp.title}
-                                      </h3>
-                                      <p className="text-sm text-gray-600 mb-4">
-                                        {
-                                          details.details.sections.smtp
-                                            .description
-                                        }
-                                      </p>
-                                      {results[
-                                        checkType
-                                      ].details.exchangers.map(
-                                        (exchanger) =>
-                                          exchanger.sessionLog &&
-                                          exchanger.sessionLog.length > 0 && (
-                                            <div
-                                              key={`${exchanger.host}-smtp`}
-                                              className="mb-4 last:mb-0"
-                                            >
-                                              <h4 className="font-medium text-gray-900 mb-2">
-                                                {exchanger.host}
-                                              </h4>
-                                              <pre className="text-xs bg-black text-gray-100 p-4 rounded-lg overflow-x-auto font-mono leading-relaxed">
-                                                {exchanger.sessionLog.map(
-                                                  (log, i) => {
-                                                    let prefix, textColor;
-                                                    switch (log.step) {
-                                                      case "send":
-                                                        prefix = ">";
-                                                        textColor =
-                                                          "text-blue-400";
-                                                        break;
-                                                      case "receive":
-                                                        prefix = "<";
-                                                        textColor =
-                                                          "text-green-400";
-                                                        break;
-                                                      case "error":
-                                                        prefix = "!";
-                                                        textColor =
-                                                          "text-red-400";
-                                                        break;
-                                                      default:
-                                                        prefix = "-";
-                                                        textColor =
-                                                          "text-gray-400";
-                                                    }
-                                                    return (
-                                                      <div
-                                                        key={i}
-                                                        className={`${textColor}`}
-                                                      >
-                                                        <span className="text-gray-500">
-                                                          {log.timestamp}
-                                                        </span>{" "}
-                                                        <span className="text-gray-500">
-                                                          {prefix}
-                                                        </span>{" "}
-                                                        <span>{log.data}</span>
-                                                        {log.details && (
-                                                          <span className="text-gray-500 ml-2">
-                                                            ({log.details})
-                                                          </span>
-                                                        )}
-                                                      </div>
-                                                    );
-                                                  }
-                                                )}
-                                              </pre>
-                                            </div>
-                                          )
-                                      )}
-                                    </div>
+                                          {/* Blacklist Results */}
+                                          <div className="space-y-4">
+                                            <h4 className="text-sm font-medium text-gray-700">
+                                              Results:
+                                            </h4>
+                                            {results[
+                                              checkType
+                                            ].details.exchangers.map(
+                                              (exchanger) =>
+                                                exchanger.blacklistedDetails
+                                                  ?.length > 0 && (
+                                                  <div
+                                                    key={`${exchanger.host}-rbl`}
+                                                    className="border rounded-lg p-4 bg-red-50"
+                                                  >
+                                                    <h4 className="font-medium text-red-700 mb-2">
+                                                      {exchanger.host}
+                                                    </h4>
+                                                    <div className="space-y-1">
+                                                      {exchanger.blacklistedDetails.map(
+                                                        (detail) => (
+                                                          <div
+                                                            key={`${detail.ip}-${detail.rbl}`}
+                                                            className="text-sm text-red-600"
+                                                          >
+                                                            • {detail.ip} listed
+                                                            in {detail.rbl}
+                                                          </div>
+                                                        )
+                                                      )}
+                                                    </div>
+                                                  </div>
+                                                )
+                                            )}
+                                            {!results[
+                                              checkType
+                                            ].details.exchangers.some(
+                                              (e) =>
+                                                e.blacklistedDetails?.length > 0
+                                            ) && (
+                                              <div className="text-sm text-green-600 border rounded-lg p-4 bg-green-50">
+                                                ✓ No blacklist entries found in
+                                                any of the RBL providers
+                                              </div>
+                                            )}
+                                          </div>
+                                        </div>
+
+                                        {/* SMTP Session Logs */}
+                                        <div className="border rounded-lg p-4 bg-white">
+                                          <h3 className="font-medium text-gray-900 mb-2">
+                                            {
+                                              details.details.sections.smtp
+                                                .title
+                                            }
+                                          </h3>
+                                          <p className="text-sm text-gray-600 mb-4">
+                                            {
+                                              details.details.sections.smtp
+                                                .description
+                                            }
+                                          </p>
+                                          {results[
+                                            checkType
+                                          ].details.exchangers.map(
+                                            (exchanger) =>
+                                              exchanger.sessionLog?.length >
+                                                0 && (
+                                                <div
+                                                  key={`${exchanger.host}-smtp`}
+                                                  className="mb-4 last:mb-0"
+                                                >
+                                                  <h4 className="font-medium text-gray-900 mb-2">
+                                                    {exchanger.host}
+                                                  </h4>
+                                                  <pre className="text-xs bg-black text-gray-100 p-4 rounded-lg overflow-x-auto font-mono leading-relaxed">
+                                                    {exchanger.sessionLog.map(
+                                                      (log, i) => {
+                                                        let prefix, textColor;
+                                                        switch (log.step) {
+                                                          case "send":
+                                                            prefix = ">";
+                                                            textColor =
+                                                              "text-blue-400";
+                                                            break;
+                                                          case "receive":
+                                                            prefix = "<";
+                                                            textColor =
+                                                              "text-green-400";
+                                                            break;
+                                                          case "error":
+                                                            prefix = "!";
+                                                            textColor =
+                                                              "text-red-400";
+                                                            break;
+                                                          default:
+                                                            prefix = "-";
+                                                            textColor =
+                                                              "text-gray-400";
+                                                        }
+                                                        return (
+                                                          <div
+                                                            key={i}
+                                                            className={`${textColor}`}
+                                                          >
+                                                            <span className="text-gray-500">
+                                                              {log.timestamp}
+                                                            </span>{" "}
+                                                            <span className="text-gray-500">
+                                                              {prefix}
+                                                            </span>{" "}
+                                                            <span>
+                                                              {log.data}
+                                                            </span>
+                                                            {log.details && (
+                                                              <span className="text-gray-500 ml-2">
+                                                                ({log.details})
+                                                              </span>
+                                                            )}
+                                                          </div>
+                                                        );
+                                                      }
+                                                    )}
+                                                  </pre>
+                                                </div>
+                                              )
+                                          )}
+                                        </div>
+                                      </>
+                                    )}
                                   </div>
                                 )}
                             </div>

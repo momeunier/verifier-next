@@ -1,16 +1,19 @@
 import { NextResponse } from "next/server";
-import { initializeLists } from "../../utils/listManager";
-
-export const dynamic = "force-dynamic"; // Ensure this is not cached
+import { initializeApp } from "../../utils/initializeApp";
+import { logStep, logError } from "../../utils/logging";
 
 export async function GET() {
   try {
-    const result = await initializeLists();
-    return NextResponse.json({ success: true, ...result });
+    logStep("info", "Starting initialization endpoint");
+
+    const result = await initializeApp();
+    logStep("info", "Initialization completed", JSON.stringify(result));
+
+    return NextResponse.json(result);
   } catch (error) {
-    console.error("Initialization error:", error);
+    logError("initialize", "Initialization failed", error);
     return NextResponse.json(
-      { success: false, error: error.message },
+      { error: "Initialization failed", details: error.message },
       { status: 500 }
     );
   }

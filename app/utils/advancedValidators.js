@@ -7,21 +7,60 @@ import {
   getCachedDomainRecords,
   cacheDomainRecords,
 } from "./listManager";
+import { logStep } from "./logging";
 
 const resolveTxt = promisify(dns.resolveTxt);
 const resolve4 = promisify(dns.resolve4);
+const resolveMx = promisify(dns.resolveMx);
 
-const isReputableDomain = (domain) => {
-  return domain.toLowerCase() in reputableDomains;
-};
+// Check if a domain exists by verifying DNS records
+const domainExists = async (domain) => {
+  try {
+    // Try to get MX records first (most reliable for email domains)
+    try {
+      const mxRecords = await resolveMx(domain);
+      if (mxRecords && mxRecords.length > 0) {
+        return true;
+      }
+    } catch (error) {
+      // No MX records, continue checking other record types
+    }
 
-const getReputableDomainInfo = (domain) => {
-  return reputableDomains[domain.toLowerCase()];
+    // Try to get A records as fallback
+    try {
+      const aRecords = await resolve4(domain);
+      if (aRecords && aRecords.length > 0) {
+        return true;
+      }
+    } catch (error) {
+      // No A records either
+    }
+
+    // If no MX or A records found, domain doesn't exist or can't receive email
+    return false;
+  } catch (error) {
+    console.error("Error checking domain existence:", error);
+    return false;
+  }
 };
 
 // Normalize email address by handling plus addressing
-const normalizeEmail = (email) => {
+const normalizeEmail = async (email) => {
   const [localPart, domain] = email.toLowerCase().split("@");
+
+  // Killer criteria: Domain must exist
+  const exists = await domainExists(domain);
+  if (!exists) {
+    return {
+      original: email,
+      normalized: null,
+      hasPlus: false,
+      plusPart: null,
+      provider: null,
+      exists: false,
+    };
+  }
+
   const reputableInfo = reputableDomains[domain];
   const hasPlus = localPart.includes("+");
   const plusPart = hasPlus ? localPart.split("+")[1] : null;
@@ -33,18 +72,35 @@ const normalizeEmail = (email) => {
     hasPlus,
     plusPart,
     provider: reputableInfo?.provider || null,
+    exists: true,
   };
 };
 
 export const validatePlusAddressing = async (email) => {
-  const { normalized, hasPlus, plusPart } = normalizeEmail(email);
-  const [localPart, domain] = normalized.split("@");
+  const normalizedResult = await normalizeEmail(email);
+
+  // Killer criteria: Domain must exist
+  if (!normalizedResult.exists) {
+    return {
+      isValid: false,
+      confidence: 0,
+      factors: {
+        domainExists: 0,
+      },
+      details: {
+        error: "Domain does not exist",
+        originalAddress: email,
+      },
+    };
+  }
+
+  const { normalized, hasPlus, plusPart } = normalizedResult;
 
   // If there's no plus, we return null for confidence to indicate this check should be ignored
   if (!hasPlus) {
     return {
-      isValid: true, // Not having plus addressing doesn't make it invalid
-      confidence: null, // Null confidence means this won't affect the overall score
+      isValid: true,
+      confidence: null,
       factors: {
         hasPlus: 0,
       },
@@ -57,37 +113,54 @@ export const validatePlusAddressing = async (email) => {
     };
   }
 
-  // If there is plus addressing, we give it full confidence
   return {
     isValid: true,
-    confidence: 1.0, // 100% confidence when plus addressing is used
+    confidence: 1.0,
     factors: {
       hasPlus: 1.0,
       hasPlusPart: plusPart ? 1.0 : 0,
+      domainExists: 1.0,
     },
     details: {
       hasPlus,
       plusPart,
       normalizedAddress: normalized,
       originalAddress: email,
-      tag: plusPart, // The tracking tag used
+      tag: plusPart,
     },
   };
 };
 
 export const validateReputableProvider = async (email) => {
-  const { normalized, provider } = normalizeEmail(email);
-  const [, domain] = normalized.split("@");
-  const isReputable = isReputableDomain(domain);
-  const reputableInfo = isReputable ? getReputableDomainInfo(domain) : null;
+  const normalizedResult = await normalizeEmail(email);
 
-  // If not reputable, return null confidence to ignore this check
+  // Killer criteria: Domain must exist
+  if (!normalizedResult.exists) {
+    return {
+      isValid: false,
+      confidence: 0,
+      factors: {
+        domainExists: 0,
+      },
+      details: {
+        error: "Domain does not exist",
+        originalAddress: email,
+      },
+    };
+  }
+
+  const { normalized, provider } = normalizedResult;
+  const [, domain] = normalized.split("@");
+  const isReputable = domain in reputableDomains;
+  const reputableInfo = isReputable ? reputableDomains[domain] : null;
+
   if (!isReputable) {
     return {
-      isValid: true, // Not being from a major provider doesn't make it invalid
-      confidence: null, // Null confidence means this won't affect the overall score
+      isValid: true,
+      confidence: null,
       factors: {
         isReputableProvider: 0,
+        domainExists: 1.0,
       },
       details: {
         provider: null,
@@ -98,10 +171,11 @@ export const validateReputableProvider = async (email) => {
 
   return {
     isValid: true,
-    confidence: 1.0, // 100% confidence when it's a reputable provider
+    confidence: 1.0,
     factors: {
       isReputableProvider: 1.0,
       reputation: reputableInfo.reputation || 1.0,
+      domainExists: 1.0,
     },
     details: {
       provider: reputableInfo.provider,
@@ -113,33 +187,68 @@ export const validateReputableProvider = async (email) => {
 };
 
 export const validateDisposable = async (email) => {
-  const { normalized } = normalizeEmail(email);
+  const normalizedResult = await normalizeEmail(email);
+
+  logStep("info", `Starting disposable check for: ${email}`);
+
+  // Killer criteria: Domain must exist
+  if (!normalizedResult.exists) {
+    logStep("error", "Domain does not exist", email);
+    return {
+      isValid: false,
+      confidence: 0,
+      factors: {
+        domainExists: 0,
+      },
+      details: {
+        error: "Domain does not exist",
+        originalAddress: email,
+      },
+    };
+  }
+
+  const { normalized } = normalizedResult;
   const [, domain] = normalized.split("@");
   const disposableDomains = await getDisposableDomains();
   const isDomainDisposable = disposableDomains.has(domain);
 
-  // Log for debugging
-  console.log("Disposable check for domain:", domain);
-  console.log("Is in disposable list:", isDomainDisposable);
-  console.log("Disposable list size:", disposableDomains.size);
+  logStep(
+    "info",
+    `Checking domain: ${domain}`,
+    `In disposable list: ${isDomainDisposable}`
+  );
+  logStep("debug", `Disposable domains list size: ${disposableDomains.size}`);
 
-  // Simple confidence: 1.0 if not disposable, 0 if disposable
   const confidence = isDomainDisposable ? 0 : 1.0;
-
-  return {
+  const result = {
     isValid: !isDomainDisposable,
     confidence,
     factors: {
       notInDisposableList: !isDomainDisposable ? 1.0 : 0,
+      domainExists: 1.0,
     },
     details: {
       isDomainDisposable,
       domain,
     },
   };
+
+  logStep("info", `Disposable check result`, JSON.stringify(result));
+  return result;
+};
+
+// Helper functions for reputable domain checking
+const isReputableDomain = (domain) => {
+  return domain in reputableDomains;
+};
+
+const getReputableDomainInfo = (domain) => {
+  return reputableDomains[domain] || null;
 };
 
 export const validateEmailSecurity = async (domain) => {
+  logStep("info", `Starting security check for domain: ${domain}`);
+
   const isReputable = isReputableDomain(domain);
   const reputableInfo = isReputable ? getReputableDomainInfo(domain) : null;
 
@@ -147,10 +256,12 @@ export const validateEmailSecurity = async (domain) => {
     // Check cache first
     const cachedRecords = await getCachedDomainRecords(domain);
     if (cachedRecords) {
+      logStep("info", "Using cached security records", domain);
       return cachedRecords;
     }
 
     if (isReputable) {
+      logStep("info", `Domain ${domain} is reputable`, reputableInfo?.provider);
       const result = {
         isValid: true,
         confidence: reputableInfo.reputation,
@@ -176,8 +287,9 @@ export const validateEmailSecurity = async (domain) => {
       spfRecord = txtRecords
         .flat()
         .find((record) => record.startsWith("v=spf1"));
+      logStep("info", "SPF check", spfRecord || "No SPF record found");
     } catch (error) {
-      // SPF record not found
+      logStep("error", "SPF lookup failed", error.message);
     }
 
     let dmarcRecord = null;
@@ -186,8 +298,9 @@ export const validateEmailSecurity = async (domain) => {
       dmarcRecord = dmarcRecords
         .flat()
         .find((record) => record.startsWith("v=DMARC1"));
+      logStep("info", "DMARC check", dmarcRecord || "No DMARC record found");
     } catch (error) {
-      // DMARC record not found
+      logStep("error", "DMARC lookup failed", error.message);
     }
 
     let dkimRecord = null;
@@ -199,10 +312,11 @@ export const validateEmailSecurity = async (domain) => {
         );
         if (dkimRecords.length > 0) {
           dkimRecord = dkimRecords[0];
+          logStep("info", `DKIM found with selector: ${selector}`, dkimRecord);
           break;
         }
       } catch (error) {
-        continue;
+        logStep("debug", `No DKIM record for selector: ${selector}`);
       }
     }
 
@@ -245,6 +359,7 @@ export const validateEmailSecurity = async (domain) => {
     await cacheDomainRecords(domain, result);
     return result;
   } catch (error) {
+    logStep("error", "Security check failed", error.message);
     return {
       isValid: false,
       confidence: 0,
@@ -255,14 +370,15 @@ export const validateEmailSecurity = async (domain) => {
 };
 
 export const validateDomainAge = async (domain) => {
-  const isReputable = isReputableDomain(domain);
-  const reputableInfo = isReputable ? getReputableDomainInfo(domain) : null;
+  logStep("info", `Starting domain age check for domain: ${domain}`);
+
   const ianaTlds = await getIanaTlds();
 
   try {
     // Check if TLD is valid
     const tld = domain.split(".").pop().toLowerCase();
     const hasTld = ianaTlds.has(tld);
+    logStep("info", `TLD check: ${tld}`, hasTld ? "Valid" : "Invalid");
 
     if (!hasTld) {
       return {
@@ -273,98 +389,86 @@ export const validateDomainAge = async (domain) => {
         },
         details: {
           error: "Invalid TLD",
+          errorDetails: {
+            message: `The top-level domain '${tld}' is not recognized in the IANA database`,
+            foundIssues: ["Invalid or unrecognized TLD"],
+            recommendations: [
+              "Verify the domain spelling is correct",
+              "Check if the TLD is newly registered with IANA",
+              "Consider using a well-established TLD like .com, .org, .net",
+            ],
+          },
+          tld,
         },
       };
     }
 
-    if (isReputable) {
-      return {
-        isValid: true,
-        confidence: reputableInfo.reputation,
-        factors: {
-          isReputableProvider: reputableInfo.reputation,
-          wellEstablished: 0.1,
-          validTld: 0.1,
-        },
-        details: {
-          hasIp: true,
-          hasWww: true,
-          hasMailSubdomain: true,
-          provider: reputableInfo.provider,
-        },
-      };
-    }
-
-    // Check cache first
-    const cacheKey = `domain:age:${domain}`;
-    const cachedResult = await getCachedDomainRecords(domain);
-    if (cachedResult) {
-      return cachedResult;
-    }
-
-    // Regular checks for non-reputable domains
+    // Check domain infrastructure
     let hasIp = false;
     try {
-      await resolve4(domain);
+      const ips = await resolve4(domain);
       hasIp = true;
+      logStep("info", `IP check: Found ${ips.length} IP(s)`, ips);
     } catch (error) {
-      // No A record
+      logStep("error", "IP check failed", {
+        error: error.message,
+        code: error.code,
+      });
     }
 
-    let hasWww = false;
-    try {
-      await resolve4(`www.${domain}`);
-      hasWww = true;
-    } catch (error) {
-      // No www record
-    }
+    // Calculate domain age score based on infrastructure
+    const infrastructureScore = hasIp ? 0.4 : 0;
 
-    let hasMailSubdomain = false;
-    try {
-      await resolve4(`mail.${domain}`);
-      hasMailSubdomain = true;
-    } catch (error) {
-      // No mail subdomain
-    }
-
-    const factors = {
-      hasIpAddress: hasIp ? 0.4 : 0,
-      hasWwwSubdomain: hasWww ? 0.3 : 0,
-      hasMailSubdomain: hasMailSubdomain ? 0.3 : 0,
-      validTld: hasTld ? 0.2 : 0,
-      domainStructure:
-        /^[a-zA-Z0-9][a-zA-Z0-9-]{1,61}[a-zA-Z0-9]\.[a-zA-Z]{2,}$/.test(domain)
-          ? 0.2
-          : 0,
-    };
-
-    const confidence = Object.values(factors).reduce(
-      (sum, score) => sum + score,
-      0
-    );
-    const normalizedConfidence = Math.min(confidence, 1);
-
-    const result = {
+    // Note: We need to implement WHOIS lookup to get actual domain age
+    // For now, we'll return a clear message about this limitation
+    return {
       isValid: hasIp && hasTld,
-      confidence: normalizedConfidence,
-      factors,
+      confidence: infrastructureScore,
+      factors: {
+        hasIpAddress: hasIp ? 0.4 : 0,
+        validTld: hasTld ? 0.2 : 0,
+      },
       details: {
         hasIp,
-        hasWww,
-        hasMailSubdomain,
         tld,
+        status: "Infrastructure check only",
+        analysis:
+          "Note: Actual domain age verification requires WHOIS data access",
+        limitations: [
+          "Current check only verifies domain infrastructure",
+          "WHOIS data access needed for true age verification",
+          "Consider implementing WHOIS lookup for complete age verification",
+        ],
+        recommendations: [
+          "To implement full domain age verification:",
+          "1. Add WHOIS data access",
+          "2. Calculate age from domain creation date",
+          "3. Factor age into confidence score",
+        ],
       },
     };
-
-    // Cache the results
-    await cacheDomainRecords(domain, result);
-    return result;
   } catch (error) {
+    logStep("error", "Domain age check failed", error.message);
     return {
       isValid: false,
       confidence: 0,
       factors: {},
-      error: error.message,
+      details: {
+        error: "Domain age check failed",
+        errorDetails: {
+          message: "Unable to complete domain age verification",
+          foundIssues: ["Unexpected error during domain verification"],
+          recommendations: [
+            "Verify the domain spelling is correct",
+            "Check if the domain's DNS is properly configured",
+            "Try again in a few minutes",
+          ],
+          technicalDetails: {
+            error: error.message,
+            errorCode: error.code || null,
+          },
+        },
+      },
     };
   }
 };

@@ -1,137 +1,124 @@
 import { createClient } from "redis";
-
-const getRedisConfig = () => {
-  if (!process.env.REDIS_URL) {
-    console.warn("REDIS_URL is not set");
-    return null;
-  }
-
-  return {
-    url: process.env.REDIS_URL,
-    socket: {
-      keepAlive: 30000,
-      reconnectStrategy: (retries) => {
-        const delay = Math.min(Math.pow(2, retries) * 1000, 10000);
-        return delay;
-      },
-    },
-  };
-};
+import { logSystem, logError } from "./logging";
 
 let redisClient = null;
 
-const createRedisClient = () => {
-  if (!redisClient) {
-    try {
-      const config = getRedisConfig();
-      if (!config) {
-        console.log("Redis configuration not available");
-        return null;
-      }
-
-      redisClient = createClient(config);
-
-      redisClient.on("error", (err) => {
-        console.error("Redis Client Error:", err);
-        if (err.code === "ECONNREFUSED" || err.code === "ENOTFOUND") {
-          redisClient = null;
-        }
-      });
-
-      redisClient.on("connect", () => {
-        console.log("Redis client connected");
-      });
-
-      redisClient.on("reconnecting", () => {
-        console.log("Redis client reconnecting");
-      });
-
-      redisClient.on("end", () => {
-        console.log("Redis client connection ended");
-        redisClient = null;
-      });
-    } catch (error) {
-      console.error("Error creating Redis client:", error);
-      redisClient = null;
-    }
-  }
-
-  return redisClient;
-};
-
-// Connect to Redis with error handling and retries
-const connectRedis = async () => {
-  try {
-    const client = createRedisClient();
-
-    if (!client) {
-      console.log("Redis client not available, proceeding without Redis");
-      return null;
-    }
-
-    if (!client.isOpen) {
-      await client.connect();
-    }
-
-    return client;
-  } catch (error) {
-    console.error("Error connecting to Redis:", error);
-    return null;
-  }
-};
-
-// Cache keys with environment-specific prefixes
 const ENV_PREFIX = process.env.NODE_ENV === "production" ? "prod" : "dev";
 
 export const CACHE_KEYS = {
   IANA_TLDS: `${ENV_PREFIX}:email:validator:iana:tlds`,
   DISPOSABLE_DOMAINS: `${ENV_PREFIX}:email:validator:disposable:domains`,
-  DOMAIN_RECORDS: `${ENV_PREFIX}:email:validator:domain:records:`, // Append domain name
-  DOMAIN_AGE: `${ENV_PREFIX}:email:validator:domain:age:`, // Append domain name
+  DOMAIN_RECORDS: `${ENV_PREFIX}:email:validator:domain:records:`,
+  DOMAIN_AGE: `${ENV_PREFIX}:email:validator:domain:age:`,
 };
 
-// Cache durations (in seconds)
 export const CACHE_TTL = {
-  IANA_TLDS: 24 * 60 * 60, // 24 hours
-  DISPOSABLE_DOMAINS: 24 * 60 * 60, // 24 hours
-  DOMAIN_RECORDS: 60 * 60, // 1 hour
-  DOMAIN_AGE: 24 * 60 * 60, // 24 hours
+  IANA_TLDS: 24 * 60 * 60,
+  DISPOSABLE_DOMAINS: 24 * 60 * 60,
+  DOMAIN_RECORDS: 60 * 60,
+  DOMAIN_AGE: 24 * 60 * 60,
 };
 
-// Helper functions with improved error handling
-export const getRedisClient = async () => {
+export const createRedisClient = async () => {
   try {
-    return await connectRedis();
+    const redisUrl = process.env.REDIS_URL;
+    if (!redisUrl) {
+      logSystem("redis", "Redis configuration not available");
+      return null;
+    }
+
+    logSystem("redis", "Creating Redis client");
+
+    const client = createClient({
+      url: redisUrl,
+      socket: {
+        reconnectStrategy: (retries) => {
+          if (retries > 10) {
+            logSystem("redis", "Maximum reconnection attempts reached");
+            return false;
+          }
+          const delay = Math.min(Math.pow(2, retries) * 1000, 10000);
+          logSystem(
+            "redis",
+            `Reconnecting in ${delay}ms`,
+            `Attempt ${retries}`
+          );
+          return delay;
+        },
+      },
+    });
+
+    client.on("error", (err) => {
+      logError("redis", "Redis client error", err);
+      if (err.code === "ECONNREFUSED") {
+        logSystem("redis", "Connection refused - check Redis server status");
+      }
+    });
+
+    client.on("connect", () => {
+      logSystem("redis", "Client connected successfully");
+    });
+
+    client.on("reconnecting", () => {
+      logSystem("redis", "Client attempting to reconnect");
+    });
+
+    client.on("end", () => {
+      logSystem("redis", "Connection ended");
+      redisClient = null;
+    });
+
+    await client.connect();
+    redisClient = client;
+    return client;
   } catch (error) {
-    console.error("Failed to get Redis client:", error);
+    logError("redis", "Error creating Redis client", error);
     return null;
   }
+};
+
+export const getRedisClient = async () => {
+  if (!redisClient) {
+    try {
+      redisClient = await createRedisClient();
+      if (!redisClient) {
+        logSystem("redis", "Client not available, proceeding without Redis");
+        return null;
+      }
+    } catch (error) {
+      logError("redis", "Error connecting", error);
+      return null;
+    }
+  }
+  return redisClient;
 };
 
 export const getCachedSet = async (key) => {
   try {
     const client = await getRedisClient();
-    if (!client) return new Set();
+    if (!client) return null;
 
     const members = await client.sMembers(key);
     return new Set(members);
   } catch (error) {
-    console.error(`Error getting cached set for key ${key}:`, error);
-    return new Set();
+    logError("redis", `Error getting cached set for key ${key}`, error);
+    return null;
   }
 };
 
 export const setCachedSet = async (key, values, ttl = 3600) => {
   try {
     const client = await getRedisClient();
-    if (!client) return;
+    if (!client) return false;
 
-    if (values.size > 0 || Array.isArray(values)) {
-      await client.sAdd(key, Array.from(values));
+    await client.sAdd(key, [...values]);
+    if (ttl) {
       await client.expire(key, ttl);
     }
+    return true;
   } catch (error) {
-    console.error(`Error setting cached set for key ${key}:`, error);
+    logError("redis", `Error setting cached set for key ${key}`, error);
+    return false;
   }
 };
 
@@ -143,7 +130,7 @@ export const getCachedJson = async (key) => {
     const value = await client.get(key);
     return value ? JSON.parse(value) : null;
   } catch (error) {
-    console.error(`Error getting cached JSON for key ${key}:`, error);
+    logError("redis", `Error getting cached JSON for key ${key}`, error);
     return null;
   }
 };
@@ -151,26 +138,27 @@ export const getCachedJson = async (key) => {
 export const setCachedJson = async (key, value, ttl = 3600) => {
   try {
     const client = await getRedisClient();
-    if (!client) return;
+    if (!client) return false;
 
     await client.set(key, JSON.stringify(value));
-    await client.expire(key, ttl);
+    if (ttl) {
+      await client.expire(key, ttl);
+    }
+    return true;
   } catch (error) {
-    console.error(`Error setting cached JSON for key ${key}:`, error);
+    logError("redis", `Error setting cached JSON for key ${key}`, error);
+    return false;
   }
 };
 
-// Graceful shutdown helper
 export const closeRedisConnection = async () => {
-  if (redisClient && redisClient.isOpen) {
-    try {
+  try {
+    if (redisClient) {
       await redisClient.quit();
-      console.log("Redis connection closed gracefully");
-    } catch (error) {
-      console.error("Error closing Redis connection:", error);
-      // Force close if graceful shutdown fails
-      redisClient.disconnect();
+      logSystem("redis", "Connection closed gracefully");
+      redisClient = null;
     }
-    redisClient = null;
+  } catch (error) {
+    logError("redis", "Error closing connection", error);
   }
 };

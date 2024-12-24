@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { validateReputableProvider } from "../../../utils/advancedValidators";
+import { logStep, logError } from "../../../utils/logging";
 import { CHECK_DETAILS } from "../../../constants/checkDetails";
 
 export async function POST(request) {
@@ -7,14 +8,24 @@ export async function POST(request) {
     const { email } = await request.json();
 
     if (!email) {
+      logStep("warn", "Reputable provider check: No email provided");
       return NextResponse.json({ error: "Email is required" }, { status: 400 });
     }
 
+    logStep("info", "Reputable provider check starting", email);
+
     const result = await validateReputableProvider(email);
+    logStep(
+      "info",
+      "Reputable provider check completed",
+      JSON.stringify(result)
+    );
+
     const details = CHECK_DETAILS.reputableProvider;
 
     // If not a reputable provider, return a neutral response
     if (result.confidence === null) {
+      logStep("info", "Not a reputable provider", email);
       return NextResponse.json({
         check: "reputableProvider",
         email,
@@ -29,7 +40,7 @@ export async function POST(request) {
       });
     }
 
-    return NextResponse.json({
+    const response = {
       check: "reputableProvider",
       email,
       isValid: result.isValid,
@@ -40,9 +51,21 @@ export async function POST(request) {
         ...details.details,
         ...result.details,
       },
-    });
+    };
+
+    logStep(
+      "info",
+      "Reputable provider check response prepared",
+      JSON.stringify(response)
+    );
+    return NextResponse.json(response);
   } catch (error) {
-    console.error("Reputable provider check error:", error);
-    return NextResponse.json({ error: "Invalid request" }, { status: 400 });
+    logError("reputableProvider", "Check failed", error);
+    return NextResponse.json({
+      isValid: false,
+      confidence: 0,
+      factors: {},
+      details: { error: error.message },
+    });
   }
 }

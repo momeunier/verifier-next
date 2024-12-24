@@ -1,24 +1,39 @@
+import { createRedisClient } from "./redis";
 import { initializeLists } from "./listManager";
-
-let initialized = false;
+import { logSystem, logError } from "./logging";
 
 export const initializeApp = async () => {
-  if (initialized) return;
-
   try {
-    console.log("Initializing application...");
+    logSystem("app", "Starting initialization");
+
+    // Initialize Redis
+    const redisClient = await createRedisClient();
+    if (redisClient) {
+      logSystem("app", "Redis client initialized successfully");
+    }
 
     // Initialize lists
-    const { tlds, disposableDomains } = await initializeLists();
-    console.log(
-      `Initialization complete. TLDs: ${tlds}, Disposable Domains: ${disposableDomains}`
+    const { tlds, disposable } = await initializeLists();
+    logSystem(
+      "app",
+      "Lists initialized",
+      `TLDs: ${tlds.size}, Disposable: ${disposable.size}`
     );
 
-    initialized = true;
-    return true;
+    return {
+      initialized: true,
+      redis: !!redisClient,
+      lists: {
+        tlds: tlds.size,
+        disposable: disposable.size,
+      },
+    };
   } catch (error) {
-    console.error("Error during initialization:", error);
-    return false;
+    logError("app", "Initialization failed", error);
+    return {
+      initialized: false,
+      error: error.message,
+    };
   }
 };
 
